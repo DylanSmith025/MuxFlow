@@ -2,9 +2,14 @@
 
 一个原生 macOS SwiftUI / Xcode 项目，用于把 `.ts` 剧集批量无损封装为 `.mkv`，并批量整理轨道语言、名称、默认轨、强制显示、启用状态和保留状态。
 
+<br>
+
+
 ## 开发背景
 
-一个emby服主，收的好些港剧为.ts格式，内封国粤双音轨，为了影片更好的被emby识别，做了这个应用。
+一个emby服主，收的好些港剧为`.ts`格式，内封国粤双音轨，为了影片更好的被emby识别，做了这个应用。
+
+<br>
 
 ## 功能
 
@@ -16,11 +21,18 @@
 - 支持多个轨道预设，保存到 `UserDefaults`。
 - 输出冲突时批量确认是否覆盖。
 
+<br>
+
+
 ## 内置依赖
 
 `mkvmerge` 和所需动态库已放在原生项目的 `Resources` 中，构建出的 App 不要求用户额外安装 MKVToolNix。
 
+<br>
 
+## 截图
 
 <img width="1572" height="949" alt="截屏2026-05-17 21 53 45" src="https://github.com/user-attachments/assets/58001058-c796-4b5c-9d71-840cf18da5c8" />
+
+<img width="1549" height="949" alt="截屏2026-05-17 23 45 04" src="https://github.com/user-attachments/assets/0875d6a3-859c-465d-b0c0-10b40ffe7689" />
 
