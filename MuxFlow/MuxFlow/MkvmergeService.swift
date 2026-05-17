@@ -21,29 +21,34 @@ enum MkvmergeServiceError: LocalizedError {
 }
 
 final class MkvmergeService: @unchecked Sendable {
+    static let progressStepsPerFile = 5
+
     private var bundledMkvmerge: URL? {
         Bundle.main.url(forResource: "mkvmerge", withExtension: nil)
     }
 
-    func scan(inputPaths: [URL], outputDir: URL, preset: TrackPreset?) async throws -> [MediaFile] {
+    func outputPath(for file: URL, in outputDir: URL) -> URL {
+        outputDir
+            .appendingPathComponent(file.deletingPathExtension().lastPathComponent)
+            .appendingPathExtension("mkv")
+    }
+
+    func scan(inputPaths: [URL], outputDir: URL) async throws -> [MediaFile] {
         let files = try collectTsFiles(from: inputPaths)
         var mediaFiles: [MediaFile] = []
 
         for file in files {
-            let outputPath = outputDir
-                .appendingPathComponent(file.deletingPathExtension().lastPathComponent)
-                .appendingPathExtension("mkv")
+            let outputPath = outputPath(for: file, in: outputDir)
 
             do {
-                var tracks = try await identify(file)
-                let warnings = TrackMatcher.apply(preset, to: &tracks)
+                let tracks = try await identify(file)
                 mediaFiles.append(
                     MediaFile(
                         path: file,
                         fileName: file.lastPathComponent,
                         outputPath: outputPath,
-                        status: warnings.isEmpty ? .ready : .warning,
-                        warnings: warnings,
+                        status: .ready,
+                        warnings: [],
                         tracks: tracks
                     )
                 )
@@ -70,9 +75,9 @@ final class MkvmergeService: @unchecked Sendable {
             .map(\.outputPath)
     }
 
-    func convert(_ file: MediaFile, overwrite: Bool) async -> ConversionResult {
+    func convert(_ file: MediaFile, overwrite: Bool, onProgress: @escaping @Sendable (Int) -> Void) async -> ConversionResult {
         do {
-            try await convertOne(file, overwrite: overwrite)
+            try await convertOne(file, overwrite: overwrite, onProgress: onProgress)
             return ConversionResult(filePath: file.path, outputPath: file.outputPath, success: true, message: "完成")
         } catch {
             return ConversionResult(
@@ -94,7 +99,7 @@ final class MkvmergeService: @unchecked Sendable {
         return try parseTracks(from: output.stdout)
     }
 
-    private func convertOne(_ file: MediaFile, overwrite: Bool) async throws {
+    private func convertOne(_ file: MediaFile, overwrite: Bool, onProgress: @escaping @Sendable (Int) -> Void) async throws {
         if FileManager.default.fileExists(atPath: file.outputPath.path), !overwrite {
             throw MkvmergeServiceError.processFailed("输出文件已存在，未授权覆盖。")
         }
@@ -122,7 +127,7 @@ final class MkvmergeService: @unchecked Sendable {
         arguments.append("--track-order")
         arguments.append(selectedTracks.map { "0:\($0.id)" }.joined(separator: ","))
 
-        _ = try await runMkvmerge(arguments: arguments)
+        _ = try await runMkvmerge(arguments: arguments, onProgress: onProgress)
     }
 
     private func addSelectionArguments(to arguments: inout [String], tracks: [MediaTrack]) {
@@ -143,7 +148,7 @@ final class MkvmergeService: @unchecked Sendable {
         }
     }
 
-    private func runMkvmerge(arguments: [String]) async throws -> (stdout: Data, stderr: Data) {
+    private func runMkvmerge(arguments: [String], onProgress: (@Sendable (Int) -> Void)? = nil) async throws -> (stdout: Data, stderr: Data) {
         guard let executable = bundledMkvmerge else {
             throw MkvmergeServiceError.missingBundledExecutable
         }
@@ -157,14 +162,27 @@ final class MkvmergeService: @unchecked Sendable {
             let stderr = Pipe()
             process.standardOutput = stdout
             process.standardError = stderr
+            let output = MkvmergeProcessOutput()
+
+            stdout.fileHandleForReading.readabilityHandler = { handle in
+                output.append(handle.availableData, isStandardOutput: true, onProgress: onProgress)
+            }
+            stderr.fileHandleForReading.readabilityHandler = { handle in
+                output.append(handle.availableData, isStandardOutput: false, onProgress: onProgress)
+            }
 
             process.terminationHandler = { process in
-                let stdoutData = stdout.fileHandleForReading.readDataToEndOfFile()
-                let stderrData = stderr.fileHandleForReading.readDataToEndOfFile()
+                stdout.fileHandleForReading.readabilityHandler = nil
+                stderr.fileHandleForReading.readabilityHandler = nil
+
+                output.append(stdout.fileHandleForReading.readDataToEndOfFile(), isStandardOutput: true, onProgress: onProgress)
+                output.append(stderr.fileHandleForReading.readDataToEndOfFile(), isStandardOutput: false, onProgress: onProgress)
+
+                let finalOutput = output.snapshot()
                 if process.terminationStatus == 0 {
-                    continuation.resume(returning: (stdoutData, stderrData))
+                    continuation.resume(returning: finalOutput)
                 } else {
-                    let message = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let message = String(data: finalOutput.stderr, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
                     continuation.resume(throwing: MkvmergeServiceError.processFailed(message?.isEmpty == false ? message! : "mkvmerge 执行失败。"))
                 }
             }
@@ -237,5 +255,60 @@ final class MkvmergeService: @unchecked Sendable {
 
     private func yesNo(_ value: Bool) -> String {
         value ? "yes" : "no"
+    }
+}
+
+private final class MkvmergeProcessOutput: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stdout = Data()
+    private var stderr = Data()
+    private var lastProgress = -1
+
+    func append(_ data: Data, isStandardOutput: Bool, onProgress: (@Sendable (Int) -> Void)?) {
+        guard !data.isEmpty else { return }
+
+        lock.lock()
+        if isStandardOutput {
+            stdout.append(data)
+        } else {
+            stderr.append(data)
+        }
+
+        let progress = onProgress.flatMap { _ in
+            Self.latestProgressPercent(from: stdout) ?? Self.latestProgressPercent(from: stderr)
+        }
+        let shouldReport = progress.map { $0 > lastProgress } ?? false
+        if let progress, shouldReport {
+            lastProgress = progress
+        }
+        lock.unlock()
+
+        if let progress, shouldReport {
+            onProgress?(progress)
+        }
+    }
+
+    func snapshot() -> (stdout: Data, stderr: Data) {
+        lock.lock()
+        let output = (stdout: stdout, stderr: stderr)
+        lock.unlock()
+        return output
+    }
+
+    private static func latestProgressPercent(from data: Data) -> Int? {
+        guard let text = String(data: data, encoding: .utf8) else { return nil }
+
+        let pattern = #"Progress:\s*(\d{1,3})%"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = regex.matches(in: text, range: range).last,
+              let percentRange = Range(match.range(at: 1), in: text),
+              let percent = Int(text[percentRange])
+        else {
+            return nil
+        }
+
+        return min(max(percent, 0), 100)
     }
 }

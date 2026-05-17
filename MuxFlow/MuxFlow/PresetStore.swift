@@ -10,33 +10,24 @@ final class PresetStore {
             return PersistedSettings(
                 lastOutputDir: nil,
                 recentInputPaths: [],
-                presets: [Self.defaultPreset],
+                presets: [],
                 languagePresets: Self.defaultLanguagePresets
-            )
-        }
-
-        if settings.presets.isEmpty {
-            return PersistedSettings(
-                lastOutputDir: settings.lastOutputDir,
-                recentInputPaths: settings.recentInputPaths,
-                presets: [Self.defaultPreset],
-                languagePresets: normalizedLanguagePresets(from: settings.languagePresets)
             )
         }
 
         return PersistedSettings(
             lastOutputDir: settings.lastOutputDir,
             recentInputPaths: settings.recentInputPaths,
-            presets: settings.presets,
+            presets: settings.presets ?? [],
             languagePresets: normalizedLanguagePresets(from: settings.languagePresets)
         )
     }
 
-    func save(outputDir: URL?, recentInputPaths: [URL], presets: [TrackPreset], languagePresets: [LanguagePreset]) {
+    func save(outputDir: URL?, recentInputPaths: [URL], languagePresets: [LanguagePreset]) {
         let settings = PersistedSettings(
             lastOutputDir: outputDir,
             recentInputPaths: recentInputPaths,
-            presets: presets.isEmpty ? [Self.defaultPreset] : presets,
+            presets: [],
             languagePresets: languagePresets.isEmpty ? Self.defaultLanguagePresets : languagePresets
         )
         guard let data = try? JSONEncoder().encode(settings) else { return }
@@ -52,35 +43,6 @@ final class PresetStore {
             return $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
     }
-
-    static let defaultPreset = TrackPreset(
-        id: UUID(uuidString: "5C2B9511-A552-4E73-9AB5-0D58412A9D44")!,
-        name: "双音轨示例",
-        rules: [
-            TrackRule(
-                trackType: "audio",
-                typeIndex: 0,
-                codec: "AC-3",
-                include: true,
-                language: "zh-Hans",
-                name: "简体中文",
-                defaultTrack: true,
-                forcedDisplay: false,
-                enabled: true
-            ),
-            TrackRule(
-                trackType: "audio",
-                typeIndex: 1,
-                codec: "AAC",
-                include: true,
-                language: "yue",
-                name: "粤语",
-                defaultTrack: false,
-                forcedDisplay: false,
-                enabled: true
-            ),
-        ]
-    )
 
     static let defaultLanguagePresets: [LanguagePreset] = [
         LanguagePreset(id: UUID(uuidString: "C1A9B044-25E3-4305-A40E-1382E06B29F9")!, name: "简体中文", tag: "zh-Hans"),

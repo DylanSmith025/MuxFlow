@@ -58,7 +58,7 @@ struct TrackRule: Codable, Equatable {
 struct PersistedSettings: Codable {
     var lastOutputDir: URL?
     var recentInputPaths: [URL]
-    var presets: [TrackPreset]
+    var presets: [TrackPreset]?
     var languagePresets: [LanguagePreset]?
 }
 

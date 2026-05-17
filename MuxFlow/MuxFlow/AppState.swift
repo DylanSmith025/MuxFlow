@@ -6,9 +6,7 @@ final class AppState: ObservableObject {
     @Published var inputPaths: [URL] = []
     @Published var outputDir: URL?
     @Published var files: [MediaFile] = []
-    @Published var presets: [TrackPreset] = []
     @Published var languagePresets: [LanguagePreset] = []
-    @Published var selectedPresetID: UUID?
     @Published var selectedFileGroupKey: String?
     @Published var isScanning = false
     @Published var isConverting = false
@@ -18,14 +16,11 @@ final class AppState: ObservableObject {
     @Published var selectedFileID: String?
     @Published var conversionCompleted = 0
     @Published var conversionTotal = 0
+    @Published var conversionCurrentStep = 0
 
     private let store = PresetStore()
     private let service = MkvmergeService()
     private var conversionTask: Task<Void, Never>?
-
-    var selectedPreset: TrackPreset? {
-        presets.first { $0.id == selectedPresetID } ?? presets.first
-    }
 
     var readyFiles: [MediaFile] {
         files.filter { !$0.tracks.isEmpty }
@@ -53,7 +48,9 @@ final class AppState: ObservableObject {
 
     var conversionProgress: Double {
         guard conversionTotal > 0 else { return 0 }
-        return Double(conversionCompleted) / Double(conversionTotal)
+        let totalSteps = conversionTotal * MkvmergeService.progressStepsPerFile
+        let completedSteps = conversionCompleted * MkvmergeService.progressStepsPerFile + conversionCurrentStep
+        return Double(completedSteps) / Double(totalSteps)
     }
 
     var conversionProgressText: String {
@@ -71,13 +68,11 @@ final class AppState: ObservableObject {
         let settings = store.load()
         outputDir = settings.lastOutputDir
         inputPaths = settings.recentInputPaths
-        presets = settings.presets
         languagePresets = sortedLanguagePresets(settings.languagePresets ?? PresetStore.defaultLanguagePresets)
-        selectedPresetID = settings.presets.first?.id
     }
 
     func persist() {
-        store.save(outputDir: outputDir, recentInputPaths: inputPaths, presets: presets, languagePresets: languagePresets)
+        store.save(outputDir: outputDir, recentInputPaths: inputPaths, languagePresets: languagePresets)
     }
 
     func addDropped(urls: [URL]) {
@@ -96,6 +91,7 @@ final class AppState: ObservableObject {
         selectedFileGroupKey = nil
         conversionCompleted = 0
         conversionTotal = 0
+        conversionCurrentStep = 0
         persist()
         notice = "已清空输入。"
     }
@@ -104,11 +100,17 @@ final class AppState: ObservableObject {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
+        panel.directoryURL = outputDir
         panel.prompt = "选择"
 
         if panel.runModal() == .OK {
-            outputDir = panel.url
+            guard let selectedOutputDir = panel.url else { return }
+            outputDir = selectedOutputDir
+            refreshOutputPaths(in: selectedOutputDir)
+            conflictPaths = []
+            showingConflictAlert = false
             persist()
         }
     }
@@ -130,8 +132,7 @@ final class AppState: ObservableObject {
             do {
                 let scanned = try await service.scan(
                     inputPaths: inputPaths,
-                    outputDir: outputDir,
-                    preset: selectedPreset
+                    outputDir: outputDir
                 )
                 files = scanned
                 let initialFile = preferredInitialFile(in: scanned)
@@ -165,25 +166,42 @@ final class AppState: ObservableObject {
         isConverting = true
         conversionCompleted = 0
         conversionTotal = batch.count
+        conversionCurrentStep = 0
         notice = "正在转换..."
 
         conversionTask = Task {
             for file in batch {
                 guard !Task.isCancelled else { break }
+                conversionCurrentStep = 0
                 setStatus(for: file.path, status: .running)
-                let result = await service.convert(file, overwrite: overwrite)
+                let result = await service.convert(file, overwrite: overwrite) { [weak self] percent in
+                    Task { @MainActor in
+                        guard let self,
+                              self.isConverting,
+                              self.files.first(where: { $0.path == file.path })?.status == .running
+                        else { return }
+                        self.conversionCurrentStep = Self.progressStep(for: percent)
+                    }
+                }
                 guard !Task.isCancelled else { break }
                 if result.success {
                     setStatus(for: result.filePath, status: .done)
+                    conversionCurrentStep = MkvmergeService.progressStepsPerFile
                 } else {
                     setStatus(for: result.filePath, status: .failed, warning: result.message)
                 }
                 conversionCompleted += 1
+                conversionCurrentStep = 0
             }
             isConverting = false
+            conversionCurrentStep = 0
             notice = Task.isCancelled ? "已取消转换：完成 \(conversionCompleted) / \(conversionTotal) 个文件。" : "批量转换完成。"
             conversionTask = nil
         }
+    }
+
+    private static func progressStep(for percent: Int) -> Int {
+        min(max(percent / 20, 0), MkvmergeService.progressStepsPerFile - 1)
     }
 
     func cancelConversion() {
@@ -305,48 +323,17 @@ final class AppState: ObservableObject {
         notice = "已修改这一组 \(changed) 个文件的 \(source.trackType) #\(source.typeIndex + 1)。"
     }
 
-    func saveCurrentPreset(named name: String) {
-        guard let file = files.first(where: { !$0.tracks.isEmpty }) else {
-            notice = "扫描后才能保存预设。"
-            return
-        }
-
-        let preset = TrackPreset(
-            id: UUID(),
-            name: name,
-            rules: file.tracks.map {
-                TrackRule(
-                    trackType: $0.trackType,
-                    typeIndex: $0.typeIndex,
-                    codec: $0.codec,
-                    include: $0.include,
-                    language: $0.language,
-                    name: $0.name,
-                    defaultTrack: $0.defaultTrack,
-                    forcedDisplay: $0.forcedDisplay,
-                    enabled: $0.enabled
-                )
-            }
-        )
-
-        presets.append(preset)
-        selectedPresetID = preset.id
-        persist()
-        notice = "已保存预设：\(name)"
-    }
-
-    func deleteSelectedPreset() {
-        guard presets.count > 1, let selectedPresetID else { return }
-        presets.removeAll { $0.id == selectedPresetID }
-        self.selectedPresetID = presets.first?.id
-        persist()
-    }
-
     private func setStatus(for path: URL, status: FileStatus, warning: String? = nil) {
         guard let index = files.firstIndex(where: { $0.path == path }) else { return }
         files[index].status = status
         if let warning {
             files[index].warnings = [warning]
+        }
+    }
+
+    private func refreshOutputPaths(in outputDir: URL) {
+        for index in files.indices {
+            files[index].outputPath = service.outputPath(for: files[index].path, in: outputDir)
         }
     }
 
