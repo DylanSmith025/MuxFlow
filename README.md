@@ -2,16 +2,6 @@
 
 一个原生 macOS SwiftUI / Xcode 项目，用于把 `.ts` 剧集批量无损封装为 `.mkv`，并批量整理轨道语言、名称、默认轨、强制显示、启用状态和保留状态。
 
-## 当前主线
-
-主项目在：
-
-```text
-MuxFlow/MuxFlow.xcodeproj
-```
-
-直接用 Xcode 打开这个 `.xcodeproj`，选择 `MuxFlow` scheme 和 `My Mac`，点击 Run 即可开发调试。
-
 ## 功能
 
 - 拖拽 `.ts` 文件或文件夹，递归扫描剧集。
