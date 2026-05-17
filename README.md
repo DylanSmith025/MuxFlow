@@ -31,3 +31,6 @@ MuxFlow/MuxFlow.xcodeproj
 ```bash
 xcodebuild -project "MuxFlow/MuxFlow.xcodeproj" -scheme "MuxFlow" -configuration Debug -derivedDataPath "MuxFlow/DerivedData" build
 ```
+
+<img width="1572" height="949" alt="截屏2026-05-17 21 53 45" src="https://github.com/user-attachments/assets/58001058-c796-4b5c-9d71-840cf18da5c8" />
+
